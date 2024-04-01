@@ -1,0 +1,38 @@
+{
+    "cell": {
+        "epochs": 190,
+        "weight_decay": 1.3e-6,
+        "batch_size": 8,
+        "dropout": 0.001,
+        "emb_size": 70,
+        "gnn_size": 165,
+        "out_emb_size": 30
+    },
+    "row": {
+        "epochs": 170,
+        "weight_decay": 9.1e-5,
+        "emb_size": 67,
+        "batch_size": 9,
+        "dropout": 0.25,
+        "gnn_size": 156,
+        "out_emb_size": 50
+    },
+    "col": {
+        "epochs": 180,
+        "weight_decay": 0.0009,
+        "emb_size": 80,
+        "batch_size": 15,
+        "dropout": 0.5,
+        "gnn_size": 145,
+        "out_emb_size": 25
+    },
+    "double": {
+        "epochs": 180,
+        "weight_decay": 0.0009,
+        "emb_size": 80,
+        "batch_size": 15,
+        "dropout": 0.5,
+        "gnn_size": 145,
+        "out_emb_size": 25
+    }
+}
