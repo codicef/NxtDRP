@@ -296,7 +296,7 @@ if __name__ == '__main__':
                         help='Number of random tests to perform')
     parser.add_argument('--cv_type', type=str, required=False, default='random_split',
                         help='Type of splitting strategy to use for the test',
-                        choices=['random_split', 'useen_cell', 'unseen_drug'])
+                        choices=['random_split', 'unseen_cell', 'unseen_drug'])
     parser.add_argument('--default_hp', type=bool, required=False, default=True,
                         help='Use default hyperparameters or optimize them')
     parser.add_argument('--device', type=str, required=False, default='cuda',

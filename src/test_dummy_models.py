@@ -7,6 +7,7 @@ from sklearn import linear_model, metrics, model_selection, preprocessing, dummy
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy.stats import pearsonr
+import pickle
 
 
 
@@ -32,9 +33,9 @@ def dummy_model(STRATIFICATION="none"):
 
 
     if STRATIFICATION != "none":
-        cv = model_selection.GroupShuffleSplit(n_splits=20, test_size=0.1, random_state=42)
+        cv = model_selection.GroupShuffleSplit(n_splits=44, test_size=0.1, random_state=42)
     else:
-        cv = model_selection.ShuffleSplit(n_splits=20, test_size=0.1, random_state=42)
+        cv = model_selection.ShuffleSplit(n_splits=44, test_size=0.1, random_state=42)
 
 
     pearson = []
@@ -53,7 +54,9 @@ def dummy_model(STRATIFICATION="none"):
     groups = drug_names if STRATIFICATION == "drug_name" else cell_line_names
     if STRATIFICATION == "none":
         groups = None
+    i = 0
     for train, test in cv.split(X, y, groups=groups):
+        i += 1
         X_train, X_test = X.iloc[train], X.iloc[test]
 
         train_drugs = drug_names[train]
@@ -75,104 +78,55 @@ def dummy_model(STRATIFICATION="none"):
 
         y_train, y_test = y[train], y[test].squeeze()
 
-        if STRATIFICATION == "drug_name":
-            df_filter = df[df['drug_name'].isin(train_drugs)]
-            avg_ic50 = df_filter.groupby('cell_line_name')['IC50'].mean()
-            X_avg = avg_ic50[test_cell_lines].values#.reshape(-1, 1)
-            # X_avg = X_test['Max conc'].values.reshape(-1, 1)
-        elif STRATIFICATION == "cell_line_name":
-            df_filter = df[df['cell_line_name'].isin(train_cell_lines)]
-            avg_ic50 = df_filter.groupby('drug_name')['IC50'].mean()
-            X_avg = avg_ic50[test_drugs].values
-        else:
-            # use one hot for x
-            X_train = np.concatenate([train_drugs_one_hot, train_cell_lines_one_hot], axis=1)
-            X_test = np.concatenate([test_drugs_one_hot, test_cell_lines_one_hot], axis=1)
-
-            model = linear_model.LinearRegression()
-            model.fit(X_train, y_train)
-            ypred = model.predict(X_test)
-        # model = linear_model.Ridge(alpha=0.1)
-        # model = linear_model.LinearRegression()
-        # model = dummy.DummyRegressor(strategy="mean")
-
-        # model.fit(X_train, y_train)
-
-        if STRATIFICATION != "none":
-            ypred = X_avg.squeeze() # model.predict(X_test)
-
-        if metrics.mean_squared_error(y_test, ypred, squared=False) > 100:
-            continue
-        pearson.append(pearsonr(ypred.squeeze(), y_test.squeeze())[0])
-        r2.append(metrics.r2_score(y_test.squeeze(), ypred.squeeze()))
-        rmse.append(metrics.mean_squared_error(y_test, ypred, squared=False))
-
-        # check perf by drug groups
-
-
-        for drug in set(test_drugs):
-            idx = np.where(test_drugs == drug)[0]
-            ypred_drug = ypred[idx]
-            ytrue_drug = y_test[idx]
-
-            # if preds is constant, pearson is nan, so check for that and skip
-
-            if not np.unique(ypred_drug).shape[0] == 1:
-                pearson_drug = pearsonr(ypred_drug.squeeze(), ytrue_drug.squeeze())[0]
-                r2_drug = metrics.r2_score(ytrue_drug.squeeze(), ypred_drug.squeeze())
+        try:
+            if STRATIFICATION == "drug_name":
+                df_filter = df[df['drug_name'].isin(train_drugs)]
+                avg_ic50 = df_filter.groupby('cell_line_name')['IC50'].mean()
+                X_avg = avg_ic50[test_cell_lines].values#.reshape(-1, 1)
+                # X_avg = X_test['Max conc'].values.reshape(-1, 1)
+            elif STRATIFICATION == "cell_line_name":
+                df_filter = df[df['cell_line_name'].isin(train_cell_lines)]
+                avg_ic50 = df_filter.groupby('drug_name')['IC50'].mean()
+                X_avg = avg_ic50[test_drugs].values
             else:
-                pearson_drug = 0
-                r2_drug = np.nan
-            rmse_drug = metrics.mean_squared_error(ytrue_drug, ypred_drug, squared=False)
+                # use one hot for x
+                X_train = np.concatenate([train_drugs_one_hot, train_cell_lines_one_hot], axis=1)
+                X_test = np.concatenate([test_drugs_one_hot, test_cell_lines_one_hot], axis=1)
 
-            # print(f"{drug}: {pearson_drug}, {r2_drug}, {rmse_drug}")
+                model = linear_model.LinearRegression()
+                model.fit(X_train, y_train)
+                ypred = model.predict(X_test)
+            # model = linear_model.Ridge(alpha=0.1)
+            # model = linear_model.LinearRegression()
+            # model = dummy.DummyRegressor(strategy="mean")
 
-            pearson_drug_l.append(pearson_drug)
-            r2_drug_l.append(r2_drug)
-            rmse_drug_l.append(rmse_drug)
+            # model.fit(X_train, y_train)
 
+            if STRATIFICATION != "none":
+                ypred = X_avg.squeeze() # model.predict(X_test)
 
-        for cell_line in set(test_cell_lines):
-            idx = np.where(test_cell_lines == cell_line)[0]
-            ypred_cell = ypred[idx]
-            ytrue_cell = y_test[idx]
-
-            if len(ypred_cell) == 1:
+            if metrics.root_mean_squared_error(y_test, ypred) > 100:
                 continue
-            if not np.unique(ypred_cell).shape[0] == 1:
-                pearson_cell = pearsonr(ypred_cell.squeeze(), ytrue_cell.squeeze())[0]
-                r2_cell = metrics.r2_score(ytrue_cell.squeeze(), ypred_cell.squeeze())
-            else:
-                pearson_cell = 0
-                r2_cell = np.nan
-            rmse_cell = metrics.mean_squared_error(ytrue_cell, ypred_cell, squared=False)
+            pearson.append(pearsonr(ypred.squeeze(), y_test.squeeze())[0])
+            r2.append(metrics.r2_score(y_test.squeeze(), ypred.squeeze()))
+            rmse.append(metrics.root_mean_squared_error(y_test, ypred))
 
-            # print(f"{cell_line}: {pearson_cell}, {r2_cell}, {rmse_cell}")
-
-            pearson_cell_l.append(pearson_cell)
-            r2_cell_l.append(r2_cell)
-            rmse_cell_l.append(rmse_cell)
-        
-    print(f"Pearson: {round(np.mean(pearson),3)}, SD {round(np.std(pearson),2)}")
-    print(f"R2: {round(np.mean(r2),3)}, SD {round(np.std(r2),2)}")
-    print(f"RMSE: {round(np.mean(rmse),3)}, SD {round(np.std(rmse),2)}")
+            # check perf by drug groups
 
 
-    print("\n\n")
-    print(f"Pearson drug: {round(np.nanmean(pearson_drug_l),3)}, SD {round(np.std(pearson_drug_l),2)}")
-    print(f"R2 drug: {round(np.nanmean(r2_drug_l),3)}, SD {round(np.std(r2_drug_l),2)}")
-    print(f"RMSE drug: {round(np.nanmean(rmse_drug_l),3)}, SD {round(np.std(rmse_drug_l),2)}")
+            # Save preds ((train_cell, train_drug), train_true values, train_predicted values, (test_cell, test_drug), test_true values, test_predicted values)
+            out = ((train_cell_lines, train_drugs), y_train, np.array([]), (test_cell_lines, test_drugs), y_test, ypred)
 
-    print("\n\n")
-    print(f"Pearson cell: {round(np.nanmean(pearson_cell_l),3)}, SD {round(np.std(pearson_cell_l),2)}")
-    print(f"R2 cell: {round(np.nanmean(r2_cell_l),3)}, SD {round(np.std(r2_cell_l),2)}")
-    print(f"RMSE cell: {round(np.nanmean(rmse_cell_l),3)}, SD {round(np.std(rmse_cell_l),2)}")
-
-
+            with open(f"./log/preds/dummy_{STRATIFICATION}_{i}.pickle", 'wb') as f:
+                pickle.dump(out, f)
+                print(f"Saved preds to ./log/preds/dummy_{STRATIFICATION}_{i}.pickle")
+        except Exception as e:
+            print(e)
+            i -= 1
+            continue
 
 
 if __name__ == '__main__':
     for STRATIFICATION in ["drug_name", "cell_line_name", "none"]:
         print(f"STRATIFICATION: {STRATIFICATION}")
         dummy_model(STRATIFICATION)
-        print("\n\n\n")

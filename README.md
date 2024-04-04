@@ -41,7 +41,7 @@ python src/data.py
 2. **Run the Predictor**: Use the following command to start the predictive modeling process. Adjust the parameters as needed:
 
 ```bash
-python main.py --model NxtDRP --n_tests 40 --cv_type random_split --default_hp True --device cuda
+python src/main.py --model NxtDRP --n_tests 40 --cv_type random_split --default_hp True --device cuda
 ```
 
 ### Parameters:
