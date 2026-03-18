@@ -717,25 +717,17 @@ if __name__ == '__main__':
     scaler = MinMaxScaler((0,1))
     # scaler = StandardScaler()
 
-    # rel_cell_line_drug_auc = Relation(cell_line_e, drug_e, 'auc',
-    #                               relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
-    #                               dtype=np.float32,
-    #                               transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
-    #                               #transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
+    rel_cell_line_drug_auc = Relation(cell_line_e, drug_e, 'auc',
+                                  relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
+                                  dtype=np.float32,
+                                  transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
+                                  #transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
 
-    # rel_cell_line_drug = Relation(cell_line_e, drug_e, 'IC50',
-    #                               relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
-    #                               dtype=np.float32,
-    #                               transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
+    rel_cell_line_drug = Relation(cell_line_e, drug_e, 'IC50',
+                                  relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
+                                  dtype=np.float32,
+                                  transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
 
-    rel_cell_line_drug_mike = Relation(cell_line_e, drug_e_m, 'IC50',
-                                       relation_data_path='./data/raw/relations/ds_fine_mi.csv',
-                                        dtype=np.float32,
-                                        # transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
-                                        transform_fun=lambda x : np.log(x))# , filter_query='rmse < 0.1')
-    #print stats rel
-    print("Drug-cell line relation stats")
-    rel_cell_line_drug_mike.print_stats()
 
 
     #Rna seq data
@@ -773,78 +765,73 @@ if __name__ == '__main__':
 
 
 
-    # # # Prot gene relation
-    # # rel_prot_rnaseq = Relation(proteomics_e, rnaseq_e, 'binary',
-    # #                             relation_data_path='./data/raw/relations/gene_proteins.csv',
-    # #                                 dtype=np.int16)
-    # # rel_prot_rnaseq.print_stats()
+    # # Prot gene relation
+    # rel_prot_rnaseq = Relation(proteomics_e, rnaseq_e, 'binary',
+    #                             relation_data_path='./data/raw/relations/gene_proteins.csv',
+    #                                 dtype=np.int16)
+    # rel_prot_rnaseq.print_stats()
 
 
 
-    # # # # Chemchemrelation
-    # rel_chem_chem = Relation(drug_e, drug_e, 'combined_score',
-    #                          relation_data_path='./data/raw/relations/stitch_chemical_chemical.csv',
-    #                          dtype=np.float32,
-    #                          transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze(),
+    # # # Chemchemrelation
+    rel_chem_chem = Relation(drug_e, drug_e, 'combined_score',
+                             relation_data_path='./data/raw/relations/stitch_chemical_chemical.csv',
+                             dtype=np.float32,
+                             transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze(),
 
-    #                          )
-
-
-    # ds_mf = DatasetHandler([rel_cell_line_drug], serialize_path='./data/datasets/base_gnn/',
-    #                        overwrite=True)
-
-    # ds_chem = DatasetHandler([rel_cell_line_drug, rel_chem_chem],
-    #                      serialize_path='./data/datasets/base_chem_gnn/',
-    #                        overwrite=True)
-
-    # ds_rnaseq = DatasetHandler([rel_cell_line_drug, rel_cell_line_rnaseq],
-    #                     serialize_path='./data/datasets/base_rnaseq_gnn/',
-    #                            overwrite=True)
+                             )
 
 
-    # ds_prot = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein],
-    #                     serialize_path='./data/datasets/base_prot_gnn/',
-    #                       overwrite=True)
+    ds_mf = DatasetHandler([rel_cell_line_drug], serialize_path='./data/datasets/base_gnn/',
+                           overwrite=True)
 
-    # ds_prot_rna = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_gnn/',
-    #                        overwrite=True)
+    ds_chem = DatasetHandler([rel_cell_line_drug, rel_chem_chem],
+                         serialize_path='./data/datasets/base_chem_gnn/',
+                           overwrite=True)
 
-    # ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_chem_chem,
-    #                                    rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_chem_gnn/',
-    #                        overwrite=True)
+    ds_rnaseq = DatasetHandler([rel_cell_line_drug, rel_cell_line_rnaseq],
+                        serialize_path='./data/datasets/base_rnaseq_gnn/',
+                               overwrite=True)
 
 
+    ds_prot = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein],
+                        serialize_path='./data/datasets/base_prot_gnn/',
+                          overwrite=True)
+
+    ds_prot_rna = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_cell_line_rnaseq],
+                         serialize_path='./data/datasets/base_prot_rnaseq_gnn/',
+                           overwrite=True)
+
+    ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_chem_chem,
+                                       rel_cell_line_rnaseq],
+                         serialize_path='./data/datasets/base_prot_rnaseq_chem_gnn/',
+                           overwrite=True)
 
 
-    # ds_mf = DatasetHandler([rel_cell_line_drug_auc], serialize_path='./data/datasets/base_auc/',
-    #                        overwrite=True)
-
-    # ds_chem = DatasetHandler([rel_cell_line_drug_auc, rel_chem_chem],
-    #                      serialize_path='./data/datasets/base_chem_auc/',
-    #                        overwrite=True)
-
-    # ds_rnaseq = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_rnaseq],
-    #                     serialize_path='./data/datasets/base_rnaseq_auc/',
-    #                            overwrite=True)
 
 
-    # ds_prot = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein],
-    #                     serialize_path='./data/datasets/base_prot_auc/',
-    #                       overwrite=True)
+    ds_mf = DatasetHandler([rel_cell_line_drug_auc], serialize_path='./data/datasets/base_auc/',
+                           overwrite=True)
 
-    # ds_prot_rna = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_auc/',
-    #                        overwrite=True)
+    ds_chem = DatasetHandler([rel_cell_line_drug_auc, rel_chem_chem],
+                         serialize_path='./data/datasets/base_chem_auc/',
+                           overwrite=True)
 
-    # ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_chem_chem,
-    #                                    rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_chem_auc/',
-    #                        overwrite=True)
+    ds_rnaseq = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_rnaseq],
+                        serialize_path='./data/datasets/base_rnaseq_auc/',
+                               overwrite=True)
 
-    ds_prot_rna_mike = DatasetHandler([rel_cell_line_drug_mike,
-                                        rel_cell_line_protein,
-                                        rel_cell_line_rnaseq],
-                             serialize_path='./data/datasets/base_prot_rnaseq_chem_mike/',
-                            overwrite=True)
+
+    ds_prot = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein],
+                        serialize_path='./data/datasets/base_prot_auc/',
+                          overwrite=True)
+
+    ds_prot_rna = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_cell_line_rnaseq],
+                         serialize_path='./data/datasets/base_prot_rnaseq_auc/',
+                           overwrite=True)
+
+    ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_chem_chem,
+                                       rel_cell_line_rnaseq],
+                         serialize_path='./data/datasets/base_prot_rnaseq_chem_auc/',
+                           overwrite=True)
+

@@ -26,12 +26,12 @@ import sys
 N_CV_SPLITS = 4
 N_TRIALS = 80
 
-
 def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
                     device='cuda',
                     cv_type='cell',
                     fixed_hyperparameters=None,
-                    test_indices=None):
+                    test_indices=None,
+                    loaded_model=None):
     print(f"\n\nRandomized test with {n_tests} random splits\nSplitting Strategy : {cv_type}\nModel : {model_class.__name__}\nDevice : {device}\nFixed Hyperparameters : {fixed_hyperparameters is not None}")
 
 
@@ -88,22 +88,27 @@ def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
             hyperparameters = fixed_hyperparameters
         print(f"Hyperparameters : {hyperparameters}")
 
-
         try:
             x_train, y_train, corr_ = buildPytorchFeats(train_idx, nx_target['domain1'],
                                                     nx_target['domain2'])
 
             # Build model
-            model = model_class(er, 'simple_test', main_emb_size=hyperparameters['emb_size'],
-                                dropout=hyperparameters['dropout'],
-                                gnn_size=hyperparameters['gnn_size'],
-                                out_emb_size=hyperparameters['out_emb_size'],
-                                device=device,
-                                side_info_file=os.path.join(ds.serialize_path, 'entities', 'drug.csv'))
+            if loaded_model is None:
+                model = model_class(er, 'simple_test', main_emb_size=hyperparameters['emb_size'],
+                                    dropout=hyperparameters['dropout'],
+                                    gnn_size=hyperparameters['gnn_size'],
+                                    out_emb_size=hyperparameters['out_emb_size'],
+                                    device=device,
+                                    side_info_file=os.path.join(ds.serialize_path, 'entities', 'drug.csv'))
+            else:
+                model = loaded_model
+
+
             wrapper = NNwrapper(model, dev=device, ignore_index=-1)
+
             wrapper.fit(er, LOG=False, epochs=hyperparameters['epochs'],
-                        weight_decay=hyperparameters['weight_decay'],
-                        batch_size=hyperparameters['batch_size'])
+                            weight_decay=hyperparameters['weight_decay'],
+                            batch_size=hyperparameters['batch_size'])
 
             y_hat_train = wrapper.predict(er, x_train, target_relation.name,
                                           target_relation.name,
@@ -113,6 +118,10 @@ def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
 
 
             train_perf = evaluate_regression(y_hat_train, y_train)
+
+            if test_indices is not None:
+                model.save(os.path.join('./log/', 'model_' + log_file_name + '.pkl'))
+
             log_message(log_file_name, f"Test fold : {test_i + 1}\nTrain Perf {train_perf}")
 
             x_test, y_test, corr = buildPytorchFeats(test_idx, nx_target['domain1'],
@@ -244,91 +253,102 @@ def objective_optuna(trial, ds, losses_dict, cv_type, model_class, hp=None, cv_s
     except:
         return 0
     return perf[0]['pearson']
+def main(model_class, cv_type, device='cuda', default_hp_path=None,
+         n_tests=1, test_indices=None, dataset_paths=None, load_model_path=None):
 
-
-
-
-def main(model_class, n_tests, cv_type, device='cuda', default_hp=None):
-    # dataset, load serialized data
+    # Loss function
     loss_f = NXLosses.LossWrapper(torch.nn.L1Loss(reduction='mean'),
                                   type='regression', ignore_index=0)
-                                  
-                                  
-    losses_dict = {'cell_line-drug': loss_f,
-                   'drug-drug': loss_f,
-                   'drug-gene': loss_f,
-                   'cell_line-gene': loss_f,
-                   'cell_line-protein': loss_f,
-                   }
 
+    losses_dict = {
+        'cell_line-drug': loss_f,
+        'drug-drug': loss_f,
+        'drug-gene': loss_f,
+        'cell_line-gene': loss_f,
+        'cell_line-protein': loss_f,
+    }
 
-    datasets = ['./data/datasets/base_gnn/',
-                './data/datasets/base_rnaseq_gnn/',
-                './data/datasets/base_prot_gnn/',
-                './data/datasets/base_prot_rnaseq_gnn/',
-                ]
-    for ds in datasets:
-        assert os.path.isdir(ds), f"Dataset {ds} not found, please check the path or generate the dataset with data.py"
+    # Default datasets
+    if dataset_paths is None:
+        dataset_paths = [
+            './data/datasets/base_prot_rnaseq_chem_mike/',
+        ]
 
-    if default_hp:
-        hp = json.load(open('data/hyperparameters/default_hp.json', 'r'))
+    if default_hp_path:
+        with open(default_hp_path, 'r') as f:
+            fixed_hyperparameters_all = json.load(f)
     else:
-        hp = None
+        fixed_hyperparameters_all = None
 
-    print(f"Testing type stratification : {cv_type}")
+    for ds_path in dataset_paths:
+        assert os.path.isdir(ds_path), f"Dataset {ds_path} not found"
+        ds = DatasetHandler.load_serialized(ds_path, load_side_info=False)
 
-    for d_i, ds_name in enumerate(datasets):
-        ds = DatasetHandler.load_serialized(ds_name, load_side_info=False)
+        loaded_model = None
+        if load_model_path is not None:
+            print(f"\n==> Loading model from {load_model_path}")
+            with open(load_model_path, 'rb') as f:
+                loaded_model = pickle.load(f)
+            print("Model loaded successfully!")
 
-        randomized_test(ds, n_tests,
-                        model_class,
+        if fixed_hyperparameters_all:
+            fixed_hp = fixed_hyperparameters_all.get(cv_type, None)
+        else:
+            fixed_hp = None
+
+        print(f"\n==> Running randomized evaluation on {ds_path} ({n_tests} splits)")
+        randomized_test(ds=ds,
+                        n_tests=n_tests,
+                        model_class=model_class,
+                        losses_dict=losses_dict,
                         target_relation=ds.rel_dict['cell_line-drug'],
-                        losses_dict=losses_dict, fixed_hyperparameters=hp[cv_type],
-                        cv_type=cv_type, device=device)
+                        device=device,
+                        cv_type=cv_type,
+                        fixed_hyperparameters=fixed_hp,
+                        test_indices=test_indices,
+                        loaded_model=loaded_model)   # <<< PASSA loaded_model
+
 
 
 if __name__ == '__main__':
-    # Argparse simple setup
-    parser = argparse.ArgumentParser(description='Run randomized validation')
-    parser.add_argument('--model', type=str, required=False, default='NxtDRP',
-                        help='Model to use for the test', choices=['NxtDRP', 'NxtDRPMC'])
-    parser.add_argument('--n_tests', type=int, required=False, default=40,
-                        help='Number of random tests to perform')
-    parser.add_argument('--cv_type', type=str, required=False, default='random_split',
-                        help='Type of splitting strategy to use for the test',
-                        choices=['random_split', 'unseen_cell', 'unseen_drug'])
-    parser.add_argument('--default_hp', type=bool, required=False, default=True,
-                        help='Use default hyperparameters or optimize them')
-    parser.add_argument('--device', type=str, required=False, default='cuda',
-                        help='Device to use for the test')
+    parser = argparse.ArgumentParser(description='Run evaluation with optional fixed test indices')
+    parser.add_argument('--model', type=str, default='NxtDRP', choices=['NxtDRP', 'NxtDRPMC'])
+    parser.add_argument('--default_hp_path', type=str, default='data/hyperparameters/default_hp.json',
+                        help='Path to JSON with fixed hyperparameters')
+    parser.add_argument('--test_indices_path', type=str, default=None,
+                        help='Path to pickle file with test indices')
+    parser.add_argument('--cv_type', type=str, default='random_split', choices=['random_split', 'unseen_cell', 'unseen_drug'])
+    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--n_tests', type=int, default=40)
+    parser.add_argument('--load_model_path', type=str, default=None,
+                        help='Path to a saved model to load instead of training a new one')
 
     args = parser.parse_args()
 
-    device = args.device
-    if device == 'cuda':
-        if not torch.cuda.is_available():
-            print("Cuda not available, switching to cpu")
-            device = 'cpu'
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        print("CUDA not available, switching to CPU.")
+        args.device = 'cpu'
 
-    model = args.model
-    if model == 'NxtDRP':
-        model_class = NxtDRP
+    model_class = NxtDRP if args.model == 'NxtDRP' else NxtDRPMC
+    map_cv = {'random_split': 'cell', 'unseen_cell': 'row', 'unseen_drug': 'col'}
+    cv_type = map_cv[args.cv_type]
+
+    # Check if test indices are provided
+    if args.test_indices_path is not None:
+        assert os.path.isfile(args.test_indices_path), f"Test indices file {args.test_indices_path} not found"
+        with open(args.test_indices_path, 'rb') as f:
+            test_indices = pickle.load(f)
+        n_tests = 1
     else:
-        model_class = NxtDRPMC
+        test_indices = None
+        n_tests = args.n_tests
 
-    cv_type = args.cv_type
-    map_cv = {'random_split': 'cell',
-              'unseen_cell': 'row',
-              'unseen_drug': 'col'}
-    cv_type = map_cv[cv_type]
+    os.makedirs('./log/preds/', exist_ok=True)
 
-
-    # Check dirs
-    if not os.path.isdir('./log/preds/'):
-        os.makedirs('./log/preds/')
-
-    main(model_class,
-         n_tests=args.n_tests,
+    main(model_class=model_class,
          cv_type=cv_type,
-         device=device,
-         default_hp=args.default_hp)
+         device=args.device,
+         default_hp_path=args.default_hp_path,
+         n_tests=n_tests,
+         test_indices=test_indices,
+         load_model_path=args.load_model_path)

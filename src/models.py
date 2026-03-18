@@ -370,3 +370,14 @@ class NxtDRP(NXmodelProto):
         o = self.out_rel[rel](o)
 
         return o
+
+
+    def save(self, path):
+        '''
+        Save the model
+        pickle
+        '''
+        import pickle
+
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)

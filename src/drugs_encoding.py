@@ -137,8 +137,55 @@ def get_smiles_drugbank(drugbank_id):
         print(f"Failed, status code: {response.status_code}")
         return None
 
+def parse_gdsc(file_path_g,
+              exclude_key='smiles'):
+
+    drugs = pd.read_csv(file_path_g)
 
 
+    drugs_name = []
+    atomic_features_list = []
+    bonds_list = []
+    fingerprints = []
+    smiles_reps = []
+    edge_attrs = []
+    maxxs = []
+    print(f"Drugs columns : {drugs.columns}")
+    for i, row in drugs.iterrows():
+        smiles_rep = row['CanonicalSmiles']
+        if ',' in smiles_rep:
+            smiles_rep = smiles_rep.split(',')[0]
+        try:
+            morgan_fingerprint = get_morgan_fingerprint(smiles_rep)
+        except:
+            morgan_fingerprint = None
+        atomic_features, edges, edge_attr = get_atomic_features(smiles_rep)
+        if atomic_features is None or len(edges) == 0 or morgan_fingerprint is None:
+            continue
+        edge_attrs.append(edge_attr)
+        atomic_features_list.append(atomic_features)
+        bonds_list.append(edges)
+        drugs_name.append(row['drug_name'])
+        fingerprints.append(morgan_fingerprint)
+        smiles_reps.append(smiles_rep)
+        if 'Max conc' in row:
+            maxxs.append(row['Max conc'])
+        else:
+            maxxs.append(0)
+
+    df_fi = pd.DataFrame({'drug_name': drugs_name,
+                          'fingerprints':fingerprints,
+                          'atomic_features': atomic_features_list,
+                          'atomic_bonds': bonds_list,
+                          'edge_attr':edge_attrs,
+                          'smiles':smiles_reps,
+                          'Max conc':maxxs})
+    df_fi = df_fi.dropna(axis=0, subset=['atomic_features'])
+
+    df_fi.to_csv('./data/raw/entities_info/mike_drugs_all.csv', index=False)
 
 if __name__ == '__main__':
+
+    parse_gdsc('./data/tmp/drug_mike.csv')
+
     pass
