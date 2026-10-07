@@ -13,21 +13,27 @@ import numpy as np
 import pandas as pd
 from sklearn import linear_model, model_selection
 from scipy import sparse
-from data import DATASETS, ic50_transform
+from data import TARGET_TRANSFORMS, load_dataset_info
 from validation import evaluate, summary_table
 
 
-def load_response(dataset, raw_dir):
-    conf = DATASETS[dataset]
-    df = pd.read_csv(os.path.join(raw_dir, conf['response']))
-    if conf['response_filter'] is not None:
-        df = df.query(conf['response_filter'])
-    df = df.dropna(subset=['drug_name', 'cell_line_name', conf['target']])
+def load_response(dataset_path):
+    '''
+    Drug response of a dataset built by data.py, with the same filters and target transformation
+    '''
+    info = load_dataset_info(dataset_path)
+    df = pd.read_csv(info['response'])
+    if info['response_filter'] is not None:
+        df = df.query(info['response_filter'])
+    df = df.dropna(subset=['drug_name', 'cell_line_name', info['target']])
     df['drug_name'] = df['drug_name'].str.lower()
     df['cell_line_name'] = df['cell_line_name'].astype(str).str.lower()
     df = df.drop_duplicates(['drug_name', 'cell_line_name'], keep='last').reset_index(drop=True)
-    df['y'] = ic50_transform(df[conf['target']]) if conf['target'] == 'IC50' else df[conf['target']]
-    df['max_conc'] = 1 / (1 + df['Max conc'] ** (-0.1))
+    transform = TARGET_TRANSFORMS[info['transform']]
+    y = df[info['target']].to_numpy(dtype=np.float32)
+    df['y'] = transform(y) if transform is not None else y
+    if 'Max conc' in df.columns:
+        df['max_conc'] = 1 / (1 + df['Max conc'] ** (-0.1))
     return df
 
 
@@ -87,16 +93,19 @@ def run_dummy(model_name, df, n_tests, seed, out_dir):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Dummy baselines (DummyDrugAvg, DummyCellAvg, DummyLR, DummyMC)')
-    parser.add_argument('--dataset', default='gdsc', choices=list(DATASETS.keys()))
-    parser.add_argument('--raw_dir', default='./data/raw')
+    parser.add_argument('--dataset', default='gdsc',
+                        help='Dataset built by src/data.py: gdsc, gdsc_auc, ccle or a custom one')
+    parser.add_argument('--datasets_dir', default='data/datasets')
     parser.add_argument('--results_dir', default='results')
     parser.add_argument('--n_tests', type=int, default=40)
     parser.add_argument('--seed', type=int, default=1956)
     args = parser.parse_args()
 
-    df = load_response(args.dataset, args.raw_dir)
+    df = load_response(os.path.join(args.datasets_dir, args.dataset))
     perfs = {}
     for model_name, cv_type in DUMMY_MODELS.items():
+        if model_name == 'DummyMC' and 'max_conc' not in df.columns:
+            continue
         run = f"{args.dataset}_{model_name}_{cv_type}"
         perfs[run] = run_dummy(model_name, df, args.n_tests, args.seed,
                                os.path.join(args.results_dir, run))

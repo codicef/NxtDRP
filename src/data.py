@@ -17,6 +17,7 @@ import math
 import seaborn as sns
 from matplotlib import pyplot as plt
 import collections
+import json
 
 
 
@@ -412,13 +413,14 @@ class Relation:
         if relation_data_path is not None:
             df = pd.read_csv(relation_data_path)
             df['idx'] = np.arange(len(df))
-            df = df.dropna()
             print(f"Relation file loaded, columns : {df.columns}")
             if entity_0.key == entity_1.key:
                 e0_key = entity_0.key + '_1'
                 e1_key = entity_1.key + '_2'
             else:
                 e0_key, e1_key = entity_0.key, entity_1.key
+            # Discard rows with missing entities or values (other columns are ignored)
+            df = df.dropna(subset=[c for c in [e0_key, e1_key, value_key] if c in df.columns])
             if filter_query is not None:
                 print(f"Filtering relation data with query : {filter_query}")
                 print(f"Original shape : {df.shape}")
@@ -669,6 +671,7 @@ class Entity:
 DATASETS = {
     'gdsc': {
         'target': 'IC50',
+        'transform': 'sigmoid',
         'response': 'relations/gdsc_drug_cellline_v6.csv',
         'response_filter': 'rmse <= 0.3',
         'drugs': 'entities/drugs_v6.csv',
@@ -678,6 +681,7 @@ DATASETS = {
     # Same data, Area Under the Dose-Response Curve as target
     'gdsc_auc': {
         'target': 'auc',
+        'transform': 'none',
         'response': 'relations/gdsc_drug_cellline_v6.csv',
         'response_filter': 'rmse <= 0.3',
         'drugs': 'entities/drugs_v6.csv',
@@ -686,6 +690,7 @@ DATASETS = {
     },
     'ccle': {
         'target': 'IC50',
+        'transform': 'sigmoid',
         'response': 'relations/ccle_drug_response.csv',
         'response_filter': None,
         'drugs': 'entities/drugs_ccle.csv',
@@ -702,71 +707,144 @@ def ic50_transform(x):
     return 1 / (1 + np.exp(x) ** (-0.1))
 
 
-def build_dataset(dataset, raw_dir, out_dir):
-    conf = DATASETS[dataset]
-    files = {k: path.join(raw_dir, conf[k]) for k in ['response', 'drugs', 'rnaseq', 'proteomics']}
-    for f in files.values():
-        assert path.isfile(f), f"Missing raw file {f} (run download_data.sh, see README.md)"
+TARGET_TRANSFORMS = {
+    'sigmoid': ic50_transform,  # ln(IC50) -> [0, 1]
+    'minmax': lambda x : MinMaxScaler((0,1)).fit_transform(x.reshape(-1,1)).squeeze(),
+    'none': None,  # values already in [0, 1], e.g. AUDRC
+}
+
+
+def encode_drugs_if_needed(drugs_file, out_dir):
+    '''
+    Drug files with only drug_name and SMILES are encoded as molecular graphs
+    '''
+    columns = pd.read_csv(drugs_file, nrows=0).columns
+    if 'atomic_features' in columns:
+        return drugs_file
+    from drugs_encoding import encode_drugs
+    smiles_key = [c for c in columns if c.lower() in ['smiles', 'canonicalsmiles']]
+    assert smiles_key, f"{drugs_file} must contain a smiles column"
+    makedirs(out_dir, exist_ok=True)
+    encoded = path.join(out_dir, 'drugs_encoded.csv')
+    encode_drugs(drugs_file, encoded, smiles_key=smiles_key[0])
+    return encoded
+
+
+def build_dataset(name, out_dir, response, drugs, rnaseq=None, proteomics=None,
+                  target='IC50', transform='sigmoid', response_filter=None):
+    '''
+    Build and serialize an ER-graph dataset.
+
+    Args:
+        response: csv with cell_line_name, drug_name, <target> (and optionally Max conc)
+        drugs: csv with drug_name and smiles, or a file already encoded by drugs_encoding.py
+        rnaseq: optional csv with cell_line_name, gene_symbol, tpm
+        proteomics: optional csv with cell_line_name, uniprot_id, z-score
+        transform: transformation of the target values, one of TARGET_TRANSFORMS
+    '''
+    for f in [response, drugs, rnaseq, proteomics]:
+        assert f is None or path.isfile(f), f"Missing file {f} (run download_data.sh, see README.md)"
+    drugs = encode_drugs_if_needed(drugs, out_dir)
 
     cell_line_e = Entity("cell_line", entity_key='cell_line_name')
-    drug_e = Entity("drug", files['drugs'],
+    drug_e = Entity("drug", drugs,
                     side_info_features=['atomic_features', 'atomic_bonds', 'fingerprints'],
                     side_info_transf_funs={}, entity_key='drug_name')
 
-    # Main task : drug response
-    # IC50 is rescaled to [0, 1], AUDRC is already in [0, 1]
-    rel_cell_line_drug = Relation(cell_line_e, drug_e, conf['target'],
-                                  relation_data_path=files['response'],
+    # Main task : drug response, rescaled to [0, 1]
+    rel_cell_line_drug = Relation(cell_line_e, drug_e, target,
+                                  relation_data_path=response,
                                   dtype=np.float32,
-                                  filter_query=conf['response_filter'],
-                                  transform_fun=ic50_transform if conf['target'] == 'IC50' else None)
+                                  filter_query=response_filter,
+                                  transform_fun=TARGET_TRANSFORMS[transform])
     print("Drug-cell line relation stats")
     rel_cell_line_drug.print_stats()
+    relations = [rel_cell_line_drug]
 
     # Maximum tested concentration of each pair (used by NxtDRPMC)
-    rel_max_conc = Relation(cell_line_e, drug_e, 'Max conc',
-                            relation_data_path=files['response'],
-                            dtype=np.float32,
-                            filter_query=conf['response_filter'])
+    has_max_conc = 'Max conc' in pd.read_csv(response, nrows=0).columns
+    if has_max_conc:
+        rel_max_conc = Relation(cell_line_e, drug_e, 'Max conc',
+                                relation_data_path=response,
+                                dtype=np.float32,
+                                filter_query=response_filter)
 
     scaler = MinMaxScaler((0,1))
 
-    # RNA-Seq (TPM = 0 is treated as not observed)
-    rnaseq_e = Entity("gene", entity_key='gene_symbol')
-    rel_cell_line_rnaseq = Relation(cell_line_e, rnaseq_e, 'tpm',
-                                    relation_data_path=files['rnaseq'],
-                                    dtype=np.float32,
-                                    filter_query='tpm > 0',
-                                    transform_fun=lambda x :scaler.fit_transform(np.log(x).reshape(-1,1)).squeeze())
-    rel_cell_line_rnaseq.print_stats()
-
     # Proteomics
-    proteomics_e = Entity("protein", entity_key='uniprot_id')
-    rel_cell_line_protein = Relation(cell_line_e, proteomics_e, 'z-score',
-                                     relation_data_path=files['proteomics'],
-                                     dtype=np.float32,
-                                     transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
-    rel_cell_line_protein.print_stats()
+    if proteomics is not None:
+        proteomics_e = Entity("protein", entity_key='uniprot_id')
+        rel_cell_line_protein = Relation(cell_line_e, proteomics_e, 'z-score',
+                                         relation_data_path=proteomics,
+                                         dtype=np.float32,
+                                         transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
+        rel_cell_line_protein.print_stats()
+        relations.append(rel_cell_line_protein)
 
-    DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_cell_line_rnaseq],
-                   serialize_path=out_dir, overwrite=True)
+    # RNA-Seq (TPM = 0 is treated as not observed)
+    if rnaseq is not None:
+        rnaseq_e = Entity("gene", entity_key='gene_symbol')
+        rel_cell_line_rnaseq = Relation(cell_line_e, rnaseq_e, 'tpm',
+                                        relation_data_path=rnaseq,
+                                        dtype=np.float32,
+                                        filter_query='tpm > 0',
+                                        transform_fun=lambda x :scaler.fit_transform(np.log(x).reshape(-1,1)).squeeze())
+        rel_cell_line_rnaseq.print_stats()
+        relations.append(rel_cell_line_rnaseq)
 
-    rel_max_conc._set_rel_matrix()
-    assert rel_max_conc.matrix.shape == rel_cell_line_drug.matrix.shape
-    sparse.save_npz(path.join(out_dir, 'relations', 'drug_response_max_conc.npz'),
-                    rel_max_conc.matrix)
-    print(f"Dataset {dataset} saved in {out_dir}")
+    DatasetHandler(relations, serialize_path=out_dir, overwrite=True)
+
+    if has_max_conc:
+        rel_max_conc._set_rel_matrix()
+        assert rel_max_conc.matrix.shape == rel_cell_line_drug.matrix.shape
+        sparse.save_npz(path.join(out_dir, 'relations', 'drug_response_max_conc.npz'),
+                        rel_max_conc.matrix)
+
+    with open(path.join(out_dir, 'dataset_info.json'), 'w') as f:
+        json.dump({'name': name, 'target': target, 'transform': transform,
+                   'response': path.abspath(response), 'response_filter': response_filter,
+                   'relations': [r.name for r in relations]}, f, indent=2)
+    print(f"Dataset {name} saved in {out_dir}")
+
+
+def load_dataset_info(dataset_path):
+    with open(path.join(dataset_path, 'dataset_info.json')) as f:
+        return json.load(f)
 
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Build the serialized ER-graph datasets')
+    parser = argparse.ArgumentParser(
+        description='Build the serialized ER-graph datasets: the paper datasets (--dataset) '
+                    'or a dataset from your own files (--custom NAME --response ... --drugs ...)')
     parser.add_argument('--dataset', default='all', choices=list(DATASETS.keys()) + ['all'])
     parser.add_argument('--raw_dir', default='./data/raw')
     parser.add_argument('--out_dir', default='./data/datasets',
-                        help='Each dataset is saved in <out_dir>/<dataset>/')
+                        help='Each dataset is saved in <out_dir>/<name>/')
+    custom = parser.add_argument_group('custom dataset')
+    custom.add_argument('--custom', default=None, metavar='NAME', help='Name of the custom dataset')
+    custom.add_argument('--response', help='csv with cell_line_name, drug_name and the target column')
+    custom.add_argument('--drugs', help='csv with drug_name and smiles (or encoded by drugs_encoding.py)')
+    custom.add_argument('--rnaseq', default=None, help='csv with cell_line_name, gene_symbol, tpm')
+    custom.add_argument('--proteomics', default=None, help='csv with cell_line_name, uniprot_id, z-score')
+    custom.add_argument('--target', default='IC50', help='Target column of --response (default IC50)')
+    custom.add_argument('--transform', default='sigmoid', choices=list(TARGET_TRANSFORMS.keys()),
+                        help='sigmoid for ln(IC50), none for values already in [0, 1], minmax otherwise')
+    custom.add_argument('--response_filter', default=None,
+                        help='Optional pandas query on --response, e.g. "rmse <= 0.3"')
     args = parser.parse_args()
 
-    datasets = list(DATASETS.keys()) if args.dataset == 'all' else [args.dataset]
-    for dataset in datasets:
-        build_dataset(dataset, args.raw_dir, path.join(args.out_dir, dataset))
+    if args.custom:
+        assert args.response and args.drugs, "--custom requires --response and --drugs"
+        build_dataset(args.custom, path.join(args.out_dir, args.custom),
+                      args.response, args.drugs, args.rnaseq, args.proteomics,
+                      args.target, args.transform, args.response_filter)
+    else:
+        datasets = list(DATASETS.keys()) if args.dataset == 'all' else [args.dataset]
+        for dataset in datasets:
+            conf = DATASETS[dataset]
+            build_dataset(dataset, path.join(args.out_dir, dataset),
+                          **{k: path.join(args.raw_dir, conf[k])
+                             for k in ['response', 'drugs', 'rnaseq', 'proteomics']},
+                          target=conf['target'], transform=conf['transform'],
+                          response_filter=conf['response_filter'])

@@ -8,7 +8,7 @@ import argparse
 import json
 import os
 import torch
-from data import DatasetHandler
+from data import DatasetHandler, load_dataset_info
 from models import NxtDRP
 from main import OMICS_RELATIONS, get_losses_dict, set_seed
 from NXTfusion.NXmultiRelSide import NNwrapper
@@ -36,7 +36,8 @@ def train_final_model(dataset_path, omics, hyperparameters, device, seed):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a final NxtDRP model on a whole dataset')
-    parser.add_argument('--dataset', type=str, default='gdsc', choices=['gdsc', 'gdsc_auc', 'ccle'])
+    parser.add_argument('--dataset', type=str, default='gdsc',
+                        help='Dataset built by src/data.py: gdsc, gdsc_auc, ccle or a custom one')
     parser.add_argument('--datasets_dir', type=str, default='data/datasets')
     parser.add_argument('--omics', type=str, default='pr_ex', choices=list(OMICS_RELATIONS.keys()))
     parser.add_argument('--hp_path', type=str, default='data/hyperparameters/default_hp.json')
@@ -64,9 +65,11 @@ if __name__ == '__main__':
     output = args.output or os.path.join('models', f"nxtdrp_{args.dataset}_{args.omics}.pt")
     os.makedirs(os.path.dirname(output) or '.', exist_ok=True)
     model.batches = {}
+    info = load_dataset_info(dataset_path)
     torch.save({'model': model,
                 'dataset': args.dataset,
-                'target': 'auc' if args.dataset.endswith('_auc') else 'IC50',
+                'target': info['target'],
+                'target_transform': info['transform'],
                 'omics': args.omics,
                 'hyperparameters': hyperparameters,
                 'cell_lines': list(ds.entities_dict['cell_line'].idx_e),

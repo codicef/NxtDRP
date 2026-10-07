@@ -5,6 +5,7 @@ NxtDRP predicts the drug response of cancer cell lines by integrating multi-omic
 This repository lets you:
 - **reproduce** the experiments of the paper on GDSC (and run the same protocol on CCLE);
 - **use** a trained model to predict the response of cell lines to known drugs or to new compounds given as SMILES;
+- **train** NxtDRP on **your own data** (drug screening, RNA-Seq, Proteomics, new cell lines or compounds);
 - **evaluate** any drug response predictor with the validation protocol of the paper (Global, Fixed-Drug and Fixed-Cell Line aggregation).
 
 > Codicè F, Pancotti C, Rollo C, Moreau Y, Fariselli P, Raimondi D. *The specification game: rethinking the evaluation of drug response prediction for precision oncology.* Journal of Cheminformatics (2025). [doi:10.1186/s13321-025-00972-y](https://doi.org/10.1186/s13321-025-00972-y)
@@ -15,8 +16,9 @@ This repository lets you:
 3. [Quickstart](#3-quickstart)
 4. [Reproducing the paper](#4-reproducing-the-paper)
 5. [Using the model](#5-using-the-model)
-6. [Evaluating any DRP predictor](#6-evaluating-any-drp-predictor)
-7. [Notes](#7-notes)
+6. [Using your own data](#6-using-your-own-data)
+7. [Evaluating any DRP predictor](#7-evaluating-any-drp-predictor)
+8. [Notes](#8-notes)
 
 All commands must be run from the repository root.
 
@@ -83,7 +85,7 @@ python src/main.py --dataset gdsc --model NxtDRP --omics pr_ex --cv_type unseen_
 
 | Option | Values |
 |---|---|
-| `--dataset` | `gdsc`, `gdsc_auc`, `ccle` |
+| `--dataset` | `gdsc`, `gdsc_auc`, `ccle`, or a dataset built from your own data (Section 6) |
 | `--model` | `NxtDRP`, or `NxtDRPMC` (adds the maximum tested concentration of the drug, MT+MC in the paper) |
 | `--omics` | ER graph: `none` (MT), `pr` (MT+PR), `ex` (MT+EX), `pr_ex` (MT+PR+EX, default) |
 | `--cv_type` | `random_split`, `unseen_cell`, `unseen_drug` |
@@ -109,7 +111,7 @@ N_TESTS=2 bash scripts/reproduce_paper.sh     # quick check
 ```
 Running time: one split on GDSC takes about 15-20 minutes on an RTX 3090 (190 epochs), so a 40-split experiment takes about 12 hours and the full script several days. The dummy baselines take a few minutes.
 
-The predictions used for the figures of the paper (NxtDRP, tCNN, GraphDRP and dummy models) are available in [codicef/DRPValidation](https://github.com/codicef/DRPValidation/tree/main/predictions) and can be evaluated with `src/validation.py` (Section 6).
+The predictions used for the figures of the paper (NxtDRP, tCNN, GraphDRP and dummy models) are available in [codicef/DRPValidation](https://github.com/codicef/DRPValidation/tree/main/predictions) and can be evaluated with `src/validation.py` (Section 7).
 
 ## 5. Using the model
 ### Train a final model
@@ -135,12 +137,75 @@ python src/predict.py --model models/nxtdrp_gdsc_pr_ex.pt --new_drugs new_drugs.
 ```
 The output csv contains, for each pair, `predicted` (the [0, 1] score), `predicted_ln_ic50` (converted back to ln IC50 for IC50 models), and the measured values (`observed`, `observed_ln_ic50`) when the pair is in the dataset. Names are matched case-insensitively and written in lowercase.
 
-**New cell lines**: NxtDRP learns a representation for each cell line from its omics and drug responses, so cell lines must be part of the training dataset. To predict a new cell line, add its RNA-Seq and/or Proteomics values to the raw files, rebuild the dataset with `src/data.py` and retrain: the cell line will be represented through its omics even without any drug response.
+**New cell lines**: NxtDRP learns a representation for each cell line from its omics and drug responses, so cell lines must be part of the training dataset: add their omics and retrain (Section 6).
 
 **What to expect**: as discussed in the paper, predictions for known drugs on cell lines with omics are informative (Fixed-Drug Pearson r of about 0.33 on unseen GDSC cell lines), while predictions for new compounds are much less reliable (Fixed-Cell Line r of about 0.28 on unseen drugs). Use the validation protocol below to check the performance in the setting you care about.
 
-## 6. Evaluating any DRP predictor
-`src/validation.py` (from [codicef/DRPValidation](https://github.com/codicef/DRPValidation)) evaluates predictions of any method. Save one csv per train/test split with the columns `cell, drug, true_value, predicted_value` and run:
+## 6. Using your own data
+`src/data.py --custom` builds a dataset from your files; it can then be used by all the other scripts with `--dataset <name>`.
+
+### File formats
+All files are csv. Names of cell lines, drugs, genes and proteins are matched case-insensitively across files; rows with a missing name or value are discarded, other columns are ignored.
+
+| File | Required columns | Notes |
+|---|---|---|
+| drug response (required) | `cell_line_name`, `drug_name`, target column (default `IC50`) | optional `Max conc` (needed by NxtDRPMC and DummyMC); one value per pair, the last one is kept |
+| drugs (required) | `drug_name`, `smiles` | molecular graphs are computed automatically; drugs without a valid SMILES are skipped |
+| RNA-Seq (optional) | `cell_line_name`, `gene_symbol`, `tpm` | TPM values; zeros are treated as not measured; log-transformed and min-max scaled |
+| Proteomics (optional) | `cell_line_name`, `uniprot_id`, `z-score` | min-max scaled |
+
+The target is rescaled to [0, 1] with `--transform`: `sigmoid` for ln(IC50) values (`y = 1 / (1 + IC50^-0.1)`, as in the paper), `none` for values already in [0, 1] such as AUDRC, `minmax` for any other value.
+
+Example:
+```
+response.csv                         drugs.csv
+cell_line_name,drug_name,IC50        drug_name,smiles
+A549,Erlotinib,2.31                  Erlotinib,COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC
+MCF7,Erlotinib,3.02                  ...
+```
+
+### Build, evaluate and train
+```bash
+# 1. select the most variable genes of a full RNA-Seq table (optional, 500 genes as in the paper)
+python src/rna_seq_filter.py --input my_rnaseq.csv --output my_rnaseq_top500.csv --k 500
+
+# 2. build the dataset in data/datasets/mydata/
+python src/data.py --custom mydata --response my_response.csv --drugs my_drugs.csv \
+    --rnaseq my_rnaseq_top500.csv --proteomics my_proteomics.csv \
+    --target IC50 --transform sigmoid
+
+# 3. estimate the performance on your data (use --omics none/pr/ex according to the omics you provided)
+python src/main.py --dataset mydata --cv_type unseen_cell --n_tests 10
+python src/dummy_models.py --dataset mydata          # baselines to compare with
+
+# 4. train the final model and predict
+python src/train.py --dataset mydata
+python src/predict.py --model models/nxtdrp_mydata_pr_ex.pt --output predictions.csv
+```
+Use `--response_filter` to filter the response values with a pandas query (e.g. `--response_filter "rmse <= 0.3"`). The default hyperparameters were tuned on GDSC; for a different dataset consider tuning them with `src/main.py --optimize_hp`.
+
+### Adding new cell lines to GDSC
+To predict the drug response of cell lines that were not screened (e.g. your own samples), add their omics to the GDSC files and build a custom dataset: they are represented through their omics, even without any drug response.
+```bash
+# append your rows (same columns) to copies of the GDSC omics files
+cat data/raw/relations/rnaseq_tpm_cellline_v6_top1000.csv > rnaseq_plus.csv
+tail -n +2 my_rnaseq.csv >> rnaseq_plus.csv
+cat data/raw/relations/protein_zscore_cellline_v6_l.csv > proteomics_plus.csv
+tail -n +2 my_proteomics.csv >> proteomics_plus.csv
+
+python src/data.py --custom gdsc_plus --response data/raw/relations/gdsc_drug_cellline_v6.csv \
+    --response_filter "rmse <= 0.3" --drugs data/raw/entities/drugs_v6.csv \
+    --rnaseq rnaseq_plus.csv --proteomics proteomics_plus.csv
+python src/train.py --dataset gdsc_plus
+python src/predict.py --model models/nxtdrp_gdsc_plus_pr_ex.pt --cell_lines MY_SAMPLE_1,MY_SAMPLE_2
+```
+Your omics must be comparable with the GDSC ones: TPM for RNA-Seq (only the genes of the GDSC file are used), protein z-scores computed in the same way, and column order as in the GDSC files (`cell_line_name,gene_symbol,tpm` and `uniprot_id,z-score,cell_line_name`).
+
+### New compounds
+New drugs can be added in two ways: list them in the drugs file of a custom dataset together with their measured responses, or predict them with a trained model and `predict.py --new_drugs new_drugs.csv` (columns `drug_name`, `smiles`), without retraining. Predictions for compounds never seen in training are much less reliable than for known drugs (see Section 5).
+
+## 7. Evaluating any DRP predictor
+`src/validation.py` (from [codicef/DRPValidation](https://github.com/codicef/DRPValidation)) evaluates predictions of any method (Section 6 shows how to run the dummy baselines on your data). Save one csv per train/test split with the columns `cell, drug, true_value, predicted_value` and run:
 ```bash
 python src/validation.py evaluate my_method_predictions/ --save_metrics
 python src/validation.py evaluate results/*/ --summary results/summary.csv   # compare several runs
@@ -152,7 +217,7 @@ Metrics are computed with three aggregation strategies:
 
 Predictions in the legacy pickle format can be converted with `python src/validation.py convert <pickle_dir> <csv_dir>`.
 
-## 7. Notes
+## 8. Notes
 - **Reproducibility**: with the same `--seed`, runs on CPU are bit-for-bit identical. On GPU some PyTorch Geometric operations are not deterministic, so results vary slightly between runs.
 - Correlations are undefined (`NaN`) for a group whose predictions are constant, e.g. DummyDrugAvg in the Fixed-Drug aggregation; this corresponds to no ranking ability (r = 0 in the paper).
 - When `--optimize_hp` is used, the hyperparameter validation folds are drawn from the whole drug response matrix, including the test pairs of the current split.

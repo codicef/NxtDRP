@@ -115,7 +115,7 @@ if __name__ == '__main__':
                         'drug_name': [d for _, d in pairs],
                         'predicted': y_hat,
                         'observed': np.where(obs != 0, obs, np.nan)})
-    if ckpt['target'] == 'IC50':
+    if ckpt['target_transform'] == 'sigmoid':
         out['predicted_ln_ic50'] = score_to_ln_ic50(out['predicted'].values)
         out['observed_ln_ic50'] = score_to_ln_ic50(out['observed'].values)
     out.to_csv(args.output, index=False)

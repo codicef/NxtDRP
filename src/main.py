@@ -348,7 +348,8 @@ def main(model_class, cv_type, dataset_path, device='cuda', default_hp_path=None
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run NxtDRP randomized train/test evaluation')
-    parser.add_argument('--dataset', type=str, default='gdsc', choices=['gdsc', 'gdsc_auc', 'ccle'])
+    parser.add_argument('--dataset', type=str, default='gdsc',
+                        help='Dataset built by src/data.py: gdsc, gdsc_auc, ccle or a custom one')
     parser.add_argument('--datasets_dir', type=str, default='data/datasets',
                         help='Folder containing the datasets built by src/data.py')
     parser.add_argument('--model', type=str, default='NxtDRP', choices=['NxtDRP', 'NxtDRPMC'])
