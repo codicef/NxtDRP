@@ -137,11 +137,12 @@ def get_smiles_drugbank(drugbank_id):
         print(f"Failed, status code: {response.status_code}")
         return None
 
-def parse_gdsc(file_path_g,
-              exclude_key='smiles'):
-
-    drugs = pd.read_csv(file_path_g)
-
+def encode_drugs(drugs_file, out_file, smiles_key='smiles'):
+    '''
+    Builds the drug entity file (fingerprints + molecular graph) from a csv
+    containing at least the columns drug_name and <smiles_key>.
+    '''
+    drugs = pd.read_csv(drugs_file)
 
     drugs_name = []
     atomic_features_list = []
@@ -152,7 +153,7 @@ def parse_gdsc(file_path_g,
     maxxs = []
     print(f"Drugs columns : {drugs.columns}")
     for i, row in drugs.iterrows():
-        smiles_rep = row['CanonicalSmiles']
+        smiles_rep = row[smiles_key]
         if ',' in smiles_rep:
             smiles_rep = smiles_rep.split(',')[0]
         try:
@@ -161,6 +162,7 @@ def parse_gdsc(file_path_g,
             morgan_fingerprint = None
         atomic_features, edges, edge_attr = get_atomic_features(smiles_rep)
         if atomic_features is None or len(edges) == 0 or morgan_fingerprint is None:
+            print(f"Skipping {row['drug_name']}: invalid SMILES")
             continue
         edge_attrs.append(edge_attr)
         atomic_features_list.append(atomic_features)
@@ -181,11 +183,18 @@ def parse_gdsc(file_path_g,
                           'smiles':smiles_reps,
                           'Max conc':maxxs})
     df_fi = df_fi.dropna(axis=0, subset=['atomic_features'])
+    df_fi = df_fi.drop_duplicates(subset=['drug_name'])
 
-    df_fi.to_csv('./data/raw/entities_info/mike_drugs_all.csv', index=False)
+    df_fi.to_csv(out_file, index=False)
+    print(f"Encoded {len(df_fi)}/{len(drugs)} drugs into {out_file}")
+
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Encode drug SMILES as molecular graphs')
+    parser.add_argument('--input', required=True, help='csv with drug_name and SMILES columns')
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--smiles_key', default='smiles')
+    args = parser.parse_args()
 
-    parse_gdsc('./data/tmp/drug_mike.csv')
-
-    pass
+    encode_drugs(args.input, args.output, smiles_key=args.smiles_key)

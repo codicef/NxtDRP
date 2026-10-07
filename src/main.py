@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
-from scipy.special import hyp0f1
 from data import DatasetHandler
 from models import NxtDRPMC, NxtDRP
 from evaluate import evaluate_regression
+from validation import evaluate, summary_table
 from utils import compute_similarities, FocalLoss, log_message
 import torch
 from NXTfusion import NXLosses
 from NXTfusion.NXmultiRelSide import NNwrapper
 from NXTfusion.NXFeaturesConstruction import buildPytorchFeats
 import seaborn as sns
-from matplotlib import cbook, pyplot as plt
 import os
+import random
 import logging
 import optuna
 from datetime import datetime
@@ -22,6 +22,7 @@ import pandas as pd
 import argparse
 import json
 import sys
+import traceback
 
 N_CV_SPLITS = 4
 N_TRIALS = 80
@@ -31,15 +32,17 @@ def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
                     cv_type='cell',
                     fixed_hyperparameters=None,
                     test_indices=None,
-                    loaded_model=None):
+                    loaded_model=None,
+                    run_name='',
+                    results_dir=None):
     print(f"\n\nRandomized test with {n_tests} random splits\nSplitting Strategy : {cv_type}\nModel : {model_class.__name__}\nDevice : {device}\nFixed Hyperparameters : {fixed_hyperparameters is not None}")
 
 
     ds_model_name = [e.name for e in ds.entities]
     ds_model_name = "_".join(ds_model_name)
 
-    log_file_name = datetime.now().strftime("%m_%d_%Y_%H:%M") + '_' + \
-        ds_model_name + '_' + cv_type +'_hp_' + str(fixed_hyperparameters is None) + '.log'
+    log_file_name = datetime.now().strftime("%Y_%m_%d_%H-%M-%S") + '_' + run_name + '_' + \
+        ds_model_name + '_' + cv_type + '_hpopt_' + str(fixed_hyperparameters is None) + '.log'
 
 
     if fixed_hyperparameters is None:
@@ -70,7 +73,8 @@ def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
         if fixed_hyperparameters is None:
             print("Optimizing hyperpameters")
             fun_obj = lambda trial : objective_optuna(trial, ds, losses_dict,
-                                                 cv_type, model_class, cv_splits=N_CV_SPLITS)
+                                                 cv_type, model_class, cv_splits=N_CV_SPLITS,
+                                                 device=device)
             study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner(n_startup_trials=5))
             study.optimize(fun_obj, n_trials=N_TRIALS, n_jobs=1)
             trial = study.best_trial
@@ -137,16 +141,30 @@ def randomized_test(ds, n_tests, model_class, losses_dict, target_relation,
 
             log_message(log_file_name, f"Test fold : {test_i + 1}\n*************\nTest Perf {test_perf}\n")
 
-            out_pred = ((x_train, y_train, y_hat_train), (x_test, y_test, y_hat_test))
-            with open('./log/preds/' + log_file_name + '_' + str(test_i), 'wb') as f:
-                pickle.dump(out_pred, f)
+            if results_dir is not None:
+                save_predictions(ds, x_test, y_test, y_hat_test,
+                                 os.path.join(results_dir, f"split_{test_i + 1:02d}.csv"))
 
 
         except Exception as e:
-            log_message(log_file_name, f"Error : {str(e)}\n")
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            log_message(log_file_name, str((exc_type, fname, exc_tb.tb_lineno)))
+            log_message(log_file_name, f"Error : {str(e)}\n{traceback.format_exc()}")
+            raise
+
+    if results_dir is not None:
+        perf = evaluate(results_dir, save_metrics=True, verbose=False)
+        log_message(log_file_name, "Test performance averaged over the splits\n" +
+                    summary_table({run_name: perf}).to_string(index=False))
+
+
+def save_predictions(ds, x, y_true, y_hat, out_file):
+    '''
+    Save the predictions of a split in the format read by validation.py
+    '''
+    cells, drugs = zip(*x)
+    pd.DataFrame({'cell': ds.entities_dict['cell_line'].idx_e[list(cells)],
+                  'drug': ds.entities_dict['drug'].idx_e[list(drugs)],
+                  'true_value': np.asarray(y_true).squeeze(),
+                  'predicted_value': np.asarray(y_hat).squeeze()}).to_csv(out_file, index=False)
 
 
 
@@ -238,7 +256,7 @@ def objective_optuna(trial, ds, losses_dict, cv_type, model_class, hp=None, cv_s
 
     try:
         perf = cross_validation(ds, ds.rel_dict['cell_line-drug'], losses_dict,  model_class,
-                                deivice=device,
+                                device=device,
                                 hyperparameters={'epochs': trial.suggest_int('epochs', 100, 250),
                                     'weight_decay': trial.suggest_float("weight_decay", 1e-8, 1e-2, log=True),
                                     'emb_size': trial.suggest_int('emb_size', 30, 80),
@@ -250,17 +268,34 @@ def objective_optuna(trial, ds, losses_dict, cv_type, model_class, hp=None, cv_s
                                 n_splits=cv_splits,
                                 cv_type=cv_type,
                                 trial=trial)
-    except:
+    except optuna.TrialPruned:
+        raise
+    except Exception as e:
+        print(f"Trial failed : {e}")
         return 0
     return perf[0]['pearson']
-def main(model_class, cv_type, device='cuda', default_hp_path=None,
-         n_tests=1, test_indices=None, dataset_paths=None, load_model_path=None):
 
-    # Loss function
+
+OMICS_RELATIONS = {
+    'none': ['cell_line-drug'],
+    'pr': ['cell_line-drug', 'cell_line-protein'],
+    'ex': ['cell_line-drug', 'cell_line-gene'],
+    'pr_ex': ['cell_line-drug', 'cell_line-protein', 'cell_line-gene'],
+}
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def get_losses_dict():
     loss_f = NXLosses.LossWrapper(torch.nn.L1Loss(reduction='mean'),
                                   type='regression', ignore_index=0)
 
-    losses_dict = {
+    return {
         'cell_line-drug': loss_f,
         'drug-drug': loss_f,
         'drug-gene': loss_f,
@@ -268,66 +303,79 @@ def main(model_class, cv_type, device='cuda', default_hp_path=None,
         'cell_line-protein': loss_f,
     }
 
-    # Default datasets
-    if dataset_paths is None:
-        dataset_paths = [
-            './data/datasets/base_prot_rnaseq_chem_mike/',
-        ]
+
+def main(model_class, cv_type, dataset_path, device='cuda', default_hp_path=None,
+         n_tests=1, test_indices=None, load_model_path=None, omics='pr_ex', seed=1956,
+         results_dir=None):
+
+    losses_dict = get_losses_dict()
 
     if default_hp_path:
         with open(default_hp_path, 'r') as f:
             fixed_hyperparameters_all = json.load(f)
+        fixed_hp = fixed_hyperparameters_all[cv_type]
     else:
-        fixed_hyperparameters_all = None
+        fixed_hp = None
 
-    for ds_path in dataset_paths:
-        assert os.path.isdir(ds_path), f"Dataset {ds_path} not found"
-        ds = DatasetHandler.load_serialized(ds_path, load_side_info=False)
+    assert os.path.isdir(dataset_path), f"Dataset {dataset_path} not found, run src/data.py first"
+    ds = DatasetHandler.load_serialized(dataset_path, load_side_info=False,
+                                        relations_to_load=OMICS_RELATIONS[omics])
+    ds.seed = seed
 
-        loaded_model = None
-        if load_model_path is not None:
-            print(f"\n==> Loading model from {load_model_path}")
-            with open(load_model_path, 'rb') as f:
-                loaded_model = pickle.load(f)
-            print("Model loaded successfully!")
+    loaded_model = None
+    if load_model_path is not None:
+        print(f"\n==> Loading model from {load_model_path}")
+        with open(load_model_path, 'rb') as f:
+            loaded_model = pickle.load(f)
+        print("Model loaded successfully!")
 
-        if fixed_hyperparameters_all:
-            fixed_hp = fixed_hyperparameters_all.get(cv_type, None)
-        else:
-            fixed_hp = None
-
-        print(f"\n==> Running randomized evaluation on {ds_path} ({n_tests} splits)")
-        randomized_test(ds=ds,
-                        n_tests=n_tests,
-                        model_class=model_class,
-                        losses_dict=losses_dict,
-                        target_relation=ds.rel_dict['cell_line-drug'],
-                        device=device,
-                        cv_type=cv_type,
-                        fixed_hyperparameters=fixed_hp,
-                        test_indices=test_indices,
-                        loaded_model=loaded_model)   # <<< PASSA loaded_model
+    print(f"\n==> Running randomized evaluation on {dataset_path} ({n_tests} splits)")
+    randomized_test(ds=ds,
+                    n_tests=n_tests,
+                    model_class=model_class,
+                    losses_dict=losses_dict,
+                    target_relation=ds.rel_dict['cell_line-drug'],
+                    device=device,
+                    cv_type=cv_type,
+                    fixed_hyperparameters=fixed_hp,
+                    test_indices=test_indices,
+                    loaded_model=loaded_model,
+                    run_name=os.path.basename(os.path.normpath(results_dir)) if results_dir
+                    else model_class.__name__,
+                    results_dir=results_dir)
 
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run evaluation with optional fixed test indices')
+    parser = argparse.ArgumentParser(description='Run NxtDRP randomized train/test evaluation')
+    parser.add_argument('--dataset', type=str, default='gdsc', choices=['gdsc', 'gdsc_auc', 'ccle'])
+    parser.add_argument('--datasets_dir', type=str, default='data/datasets',
+                        help='Folder containing the datasets built by src/data.py')
     parser.add_argument('--model', type=str, default='NxtDRP', choices=['NxtDRP', 'NxtDRPMC'])
+    parser.add_argument('--omics', type=str, default='pr_ex', choices=list(OMICS_RELATIONS.keys()),
+                        help='Cell line omics added to the ER graph: none (MT), pr (MT+PR), ex (MT+EX), pr_ex (MT+PR+EX)')
     parser.add_argument('--default_hp_path', type=str, default='data/hyperparameters/default_hp.json',
                         help='Path to JSON with fixed hyperparameters')
+    parser.add_argument('--optimize_hp', action='store_true',
+                        help='Optimize hyperparameters with optuna instead of using --default_hp_path')
     parser.add_argument('--test_indices_path', type=str, default=None,
                         help='Path to pickle file with test indices')
     parser.add_argument('--cv_type', type=str, default='random_split', choices=['random_split', 'unseen_cell', 'unseen_drug'])
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--n_tests', type=int, default=40)
+    parser.add_argument('--seed', type=int, default=1956)
     parser.add_argument('--load_model_path', type=str, default=None,
                         help='Path to a saved model to load instead of training a new one')
+    parser.add_argument('--results_dir', type=str, default='results',
+                        help='Predictions are saved in <results_dir>/<dataset>_<model>_<omics>_<cv_type>/')
 
     args = parser.parse_args()
 
     if args.device == 'cuda' and not torch.cuda.is_available():
         print("CUDA not available, switching to CPU.")
         args.device = 'cpu'
+
+    set_seed(args.seed)
 
     model_class = NxtDRP if args.model == 'NxtDRP' else NxtDRPMC
     map_cv = {'random_split': 'cell', 'unseen_cell': 'row', 'unseen_drug': 'col'}
@@ -343,12 +391,22 @@ if __name__ == '__main__':
         test_indices = None
         n_tests = args.n_tests
 
-    os.makedirs('./log/preds/', exist_ok=True)
+    run_dir = os.path.join(args.results_dir,
+                           f"{args.dataset}_{args.model}_{args.omics}_{args.cv_type}")
+    os.makedirs(run_dir, exist_ok=True)
+    for f in os.listdir(run_dir):  # remove the splits of previous runs
+        if f.startswith('split_'):
+            os.remove(os.path.join(run_dir, f))
+    os.makedirs('./log/', exist_ok=True)
 
     main(model_class=model_class,
          cv_type=cv_type,
+         dataset_path=os.path.join(args.datasets_dir, args.dataset),
          device=args.device,
-         default_hp_path=args.default_hp_path,
+         default_hp_path=None if args.optimize_hp else args.default_hp_path,
          n_tests=n_tests,
          test_indices=test_indices,
-         load_model_path=args.load_model_path)
+         load_model_path=args.load_model_path,
+         omics=args.omics,
+         seed=args.seed,
+         results_dir=run_dir)

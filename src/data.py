@@ -34,9 +34,11 @@ class DatasetHandler:
                  relations=[],
                  serialize_path="./data/datasets/base/",
                  overwrite=False,
+                 seed=1956,
                  ):
 
         self.serialize_path = serialize_path
+        self.seed = seed  # random state of the train/test splits
         self.rel_dict = {}
         self.relations = []
         self.entities = []
@@ -68,14 +70,10 @@ class DatasetHandler:
 
 
             for rel in relations:
+                # Rebuild the matrix with the final entity indices before saving
+                rel._set_rel_matrix()
                 rel.save(path.join(serialize_path, 'relations'))
 
-                # if rel.name == 'cell_line-drug':
-                #     get_max_conc_data(rel, './data/raw/relations/ccle/concat/concat_drug_response.csv',
-                #                       path.join(serialize_path, 'relations', 'drug_response_max_conc.npz'))
-                # save entities
-                #
-                rel._set_rel_matrix()
                 if overwrite or not path.isfile(path.join(serialize_path, 'entities',
                                                    rel.entity_0.name + '.csv')):
                     rel.entity_0.save(path.join(serialize_path, 'entities'))
@@ -207,7 +205,7 @@ class DatasetHandler:
         if n_splits is None:
             n_splits = len(set(groups))
         # self.n_splits = n_splits
-        kf = GroupShuffleSplit(n_splits=n_splits, test_size=0.1)#, random_state=1991)
+        kf = GroupShuffleSplit(n_splits=n_splits, test_size=0.1, random_state=self.seed)
         # kf = LeaveOneGroupOut()
 
         for train_idx, valid_idx in kf.split(X=active_indices, groups=groups):
@@ -238,7 +236,7 @@ class DatasetHandler:
 
 
         test_size = 0.1 if stratify_group == 'cell' else 10
-        kf = ShuffleSplit(n_splits=n_splits,  random_state=1956, test_size=test_size)
+        kf = ShuffleSplit(n_splits=n_splits,  random_state=self.seed, test_size=test_size)
 
 
         for train_idx, test_idx in kf.split(active_indices):
@@ -347,19 +345,19 @@ class DatasetHandler:
 
     
     @staticmethod
-    def load_serialized(serialized_path, load_side_info=True):
+    def load_serialized(serialized_path, load_side_info=True, relations_to_load=None):
         assert path.isdir(path.join(serialized_path, 'relations')) and path.isdir(
             path.join(serialized_path, 'entities'))
 
         ent_d = {}
-        for ent_file in listdir(path.join(serialized_path, 'entities')):
+        for ent_file in sorted(listdir(path.join(serialized_path, 'entities'))):
             entity = Entity.load_saved(path.join(serialized_path, 'entities', ent_file),
                                        load_side_info=load_side_info)
             ent_d[entity.name] = entity
 
 
         relations = []
-        for rel_file  in list(listdir(path.join(serialized_path, 'relations'))):
+        for rel_file in sorted(listdir(path.join(serialized_path, 'relations'))):
             if '-' not in rel_file:
                 continue
             if 'idx' in rel_file:
@@ -368,6 +366,8 @@ class DatasetHandler:
             # rel_file_name.replace('.npy', '')
             ee = rel_file.replace('.npz', '').split('-')
             e0, e1 = ee[0], ee[1]
+            if relations_to_load is not None and f"{e0}-{e1}" not in relations_to_load:
+                continue
             rel = Relation.load_saved(path.join(serialized_path,
                                                 'relations', rel_file),
                                       ent_d[e0], ent_d[e1])
@@ -665,186 +665,108 @@ class Entity:
 
 
 
-def get_max_conc_data(relation, file_path, out_path):
-    df = pd.read_csv(file_path)
-    df = df[['cell_line_name', 'drug_name', 'Max conc']]
+# Raw input files of each dataset, relative to the raw data folder
+DATASETS = {
+    'gdsc': {
+        'target': 'IC50',
+        'response': 'relations/gdsc_drug_cellline_v6.csv',
+        'response_filter': 'rmse <= 0.3',
+        'drugs': 'entities/drugs_v6.csv',
+        'rnaseq': 'relations/rnaseq_tpm_cellline_v6_top1000.csv',
+        'proteomics': 'relations/protein_zscore_cellline_v6_l.csv',
+    },
+    # Same data, Area Under the Dose-Response Curve as target
+    'gdsc_auc': {
+        'target': 'auc',
+        'response': 'relations/gdsc_drug_cellline_v6.csv',
+        'response_filter': 'rmse <= 0.3',
+        'drugs': 'entities/drugs_v6.csv',
+        'rnaseq': 'relations/rnaseq_tpm_cellline_v6_top1000.csv',
+        'proteomics': 'relations/protein_zscore_cellline_v6_l.csv',
+    },
+    'ccle': {
+        'target': 'IC50',
+        'response': 'relations/ccle_drug_response.csv',
+        'response_filter': None,
+        'drugs': 'entities/drugs_ccle.csv',
+        'rnaseq': 'relations/ccle_rnaseq_top500.csv',
+        'proteomics': 'relations/ccle_proteomics.csv',
+    },
+}
 
-    #lowercase
-    df['cell_line_name'] = df['cell_line_name'].str.lower()
-    df['drug_name'] = df['drug_name'].str.lower()
 
-    e0_keys = relation.e0_keys
-    e1_keys = relation.e1_keys
-
-    e0_indices = [relation.entity_0.e_idx[e] for e in e0_keys]
-    e1_indices = [relation.entity_1.e_idx[e] for e in e1_keys]
-
-    # get max conc for rows correspondi to e0_keys=cell_line_name, and cols e1_keys=drug_name, they represent pairs
-
-    df.set_index(['cell_line_name', 'drug_name'], inplace=True)
-    df = df.loc[list(zip(e0_keys, e1_keys))]
-    df = df.reset_index()
-    max_conc = df['Max conc'].to_numpy()
-
-    # save in sparse matrix
-    matrix = sparse.coo_matrix((max_conc, (e0_indices, e1_indices)),
-                                 shape=(len(relation.entity_0.idx_e), len(relation.entity_1.idx_e)),
-                                    dtype=np.float32)
-    sparse.save_npz(out_path, matrix)
+def ic50_transform(x):
+    '''
+    Rescale ln(IC50) values to [0, 1] with y = 1 / (1 + IC50^-0.1)
+    '''
+    return 1 / (1 + np.exp(x) ** (-0.1))
 
 
-
-if __name__ == '__main__':
-    print("Test dataset classes / Generate datasets")
-
-    if not path.isdir('./data/datasets'):
-        makedirs('./data/datasets')
+def build_dataset(dataset, raw_dir, out_dir):
+    conf = DATASETS[dataset]
+    files = {k: path.join(raw_dir, conf[k]) for k in ['response', 'drugs', 'rnaseq', 'proteomics']}
+    for f in files.values():
+        assert path.isfile(f), f"Missing raw file {f} (run download_data.sh, see README.md)"
 
     cell_line_e = Entity("cell_line", entity_key='cell_line_name')
+    drug_e = Entity("drug", files['drugs'],
+                    side_info_features=['atomic_features', 'atomic_bonds', 'fingerprints'],
+                    side_info_transf_funs={}, entity_key='drug_name')
 
+    # Main task : drug response
+    # IC50 is rescaled to [0, 1], AUDRC is already in [0, 1]
+    rel_cell_line_drug = Relation(cell_line_e, drug_e, conf['target'],
+                                  relation_data_path=files['response'],
+                                  dtype=np.float32,
+                                  filter_query=conf['response_filter'],
+                                  transform_fun=ic50_transform if conf['target'] == 'IC50' else None)
+    print("Drug-cell line relation stats")
+    rel_cell_line_drug.print_stats()
 
-    # # # Drug compounds data
-    # drug_e = Entity("drug", "./data/raw/entities_info/drugs_v6.csv",
-    #                 side_info_features=['atomic_features', 'atomic_bonds', 'fingerprints'],
-    #                 side_info_transf_funs={}, entity_key='drug_name'
-    #                 )
-
-    drug_e_m = Entity("drug", "./data/raw/entities_info/drugs_all.csv",
-                      side_info_features=['atomic_features', 'atomic_bonds', 'fingerprints'],
-                        side_info_transf_funs={}, entity_key='drug_name'
-                        )
+    # Maximum tested concentration of each pair (used by NxtDRPMC)
+    rel_max_conc = Relation(cell_line_e, drug_e, 'Max conc',
+                            relation_data_path=files['response'],
+                            dtype=np.float32,
+                            filter_query=conf['response_filter'])
 
     scaler = MinMaxScaler((0,1))
-    # scaler = StandardScaler()
 
-    # rel_cell_line_drug_auc = Relation(cell_line_e, drug_e, 'auc',
-    #                               relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
-    #                               dtype=np.float32,
-    #                               transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
-    #                               #transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
-
-    # rel_cell_line_drug = Relation(cell_line_e, drug_e, 'IC50',
-    #                               relation_data_path='./data/raw/relations/gdsc_drug_cellline_v6_nd.csv',
-    #                               dtype=np.float32,
-    #                               transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
-
-    rel_cell_line_drug_mike = Relation(cell_line_e, drug_e_m, 'IC50',
-                                       relation_data_path='./data/raw/relations/ds_fine_mi.csv',
-                                        dtype=np.float32,
-                                        # transform_fun=lambda x : 1 / (1 + (np.exp(x)**(-0.1))))# , filter_query='rmse < 0.1')
-                                        transform_fun=lambda x : np.log(x))# , filter_query='rmse < 0.1')
-    #print stats rel
-    print("Drug-cell line relation stats")
-    rel_cell_line_drug_mike.print_stats()
-
-
-    #Rna seq data
+    # RNA-Seq (TPM = 0 is treated as not observed)
     rnaseq_e = Entity("gene", entity_key='gene_symbol')
-
-    # with open("./data/raw/relations/all_cosmic_census.txt", 'r') as f:
-    #      filter_list = f.read().splitlines()
     rel_cell_line_rnaseq = Relation(cell_line_e, rnaseq_e, 'tpm',
-                                    relation_data_path='./data/raw/relations/rnaseq_tpm_cellline_v6_top500.csv',
+                                    relation_data_path=files['rnaseq'],
                                     dtype=np.float32,
+                                    filter_query='tpm > 0',
                                     transform_fun=lambda x :scaler.fit_transform(np.log(x).reshape(-1,1)).squeeze())
     rel_cell_line_rnaseq.print_stats()
 
-
-
-    # # Load genomics mut data
-    # rel_cell_line_mut = Relation(cell_line_e, rnaseq_e, 'value',
-    #                                 relation_data_path='./data/raw/relations/cell_gene_mutations.csv',
-    #                                 dtype=np.int16,
-    #                                 transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
-    # rel_cell_line_mut.print_stats()
-
-    
-
-    # # # Proteomics data
+    # Proteomics
     proteomics_e = Entity("protein", entity_key='uniprot_id')
-
     rel_cell_line_protein = Relation(cell_line_e, proteomics_e, 'z-score',
-                                     relation_data_path='./data/raw/relations/protein_zscore_cellline_v6_l.csv',
+                                     relation_data_path=files['proteomics'],
                                      dtype=np.float32,
                                      transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze())
-
     rel_cell_line_protein.print_stats()
 
+    DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_cell_line_rnaseq],
+                   serialize_path=out_dir, overwrite=True)
+
+    rel_max_conc._set_rel_matrix()
+    assert rel_max_conc.matrix.shape == rel_cell_line_drug.matrix.shape
+    sparse.save_npz(path.join(out_dir, 'relations', 'drug_response_max_conc.npz'),
+                    rel_max_conc.matrix)
+    print(f"Dataset {dataset} saved in {out_dir}")
 
 
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='Build the serialized ER-graph datasets')
+    parser.add_argument('--dataset', default='all', choices=list(DATASETS.keys()) + ['all'])
+    parser.add_argument('--raw_dir', default='./data/raw')
+    parser.add_argument('--out_dir', default='./data/datasets',
+                        help='Each dataset is saved in <out_dir>/<dataset>/')
+    args = parser.parse_args()
 
-    # # # Prot gene relation
-    # # rel_prot_rnaseq = Relation(proteomics_e, rnaseq_e, 'binary',
-    # #                             relation_data_path='./data/raw/relations/gene_proteins.csv',
-    # #                                 dtype=np.int16)
-    # # rel_prot_rnaseq.print_stats()
-
-
-
-    # # # # Chemchemrelation
-    # rel_chem_chem = Relation(drug_e, drug_e, 'combined_score',
-    #                          relation_data_path='./data/raw/relations/stitch_chemical_chemical.csv',
-    #                          dtype=np.float32,
-    #                          transform_fun=lambda x : scaler.fit_transform(x.reshape(-1,1)).squeeze(),
-
-    #                          )
-
-
-    # ds_mf = DatasetHandler([rel_cell_line_drug], serialize_path='./data/datasets/base_gnn/',
-    #                        overwrite=True)
-
-    # ds_chem = DatasetHandler([rel_cell_line_drug, rel_chem_chem],
-    #                      serialize_path='./data/datasets/base_chem_gnn/',
-    #                        overwrite=True)
-
-    # ds_rnaseq = DatasetHandler([rel_cell_line_drug, rel_cell_line_rnaseq],
-    #                     serialize_path='./data/datasets/base_rnaseq_gnn/',
-    #                            overwrite=True)
-
-
-    # ds_prot = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein],
-    #                     serialize_path='./data/datasets/base_prot_gnn/',
-    #                       overwrite=True)
-
-    # ds_prot_rna = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_gnn/',
-    #                        overwrite=True)
-
-    # ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug, rel_cell_line_protein, rel_chem_chem,
-    #                                    rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_chem_gnn/',
-    #                        overwrite=True)
-
-
-
-
-    # ds_mf = DatasetHandler([rel_cell_line_drug_auc], serialize_path='./data/datasets/base_auc/',
-    #                        overwrite=True)
-
-    # ds_chem = DatasetHandler([rel_cell_line_drug_auc, rel_chem_chem],
-    #                      serialize_path='./data/datasets/base_chem_auc/',
-    #                        overwrite=True)
-
-    # ds_rnaseq = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_rnaseq],
-    #                     serialize_path='./data/datasets/base_rnaseq_auc/',
-    #                            overwrite=True)
-
-
-    # ds_prot = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein],
-    #                     serialize_path='./data/datasets/base_prot_auc/',
-    #                       overwrite=True)
-
-    # ds_prot_rna = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_auc/',
-    #                        overwrite=True)
-
-    # ds_prot_rna_chem = DatasetHandler([rel_cell_line_drug_auc, rel_cell_line_protein, rel_chem_chem,
-    #                                    rel_cell_line_rnaseq],
-    #                      serialize_path='./data/datasets/base_prot_rnaseq_chem_auc/',
-    #                        overwrite=True)
-
-    ds_prot_rna_mike = DatasetHandler([rel_cell_line_drug_mike,
-                                        rel_cell_line_protein,
-                                        rel_cell_line_rnaseq],
-                             serialize_path='./data/datasets/base_prot_rnaseq_chem_mike/',
-                            overwrite=True)
+    datasets = list(DATASETS.keys()) if args.dataset == 'all' else [args.dataset]
+    for dataset in datasets:
+        build_dataset(dataset, args.raw_dir, path.join(args.out_dir, dataset))

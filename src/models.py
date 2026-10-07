@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import torch as t
 from NXTfusion.NXmodels import NXmodelProto
 import numpy as np
@@ -55,7 +56,7 @@ class NxtDRPMC(NXmodelProto):
             self.embs_h[entity] = t.nn.Sequential(t.nn.Linear(self.latent_sizes[entity],
                                                               out_emb_size),
                                        t.nn.LayerNorm(out_emb_size), ACTIVATION())
-        for rel in self.relations:
+        for rel in sorted(self.relations):
             if rel == 'cell_line-drug':
                 self.bi_rel[rel] = t.nn.Bilinear(out_emb_size, out_emb_size+1, out_emb_size)
             elif rel == 'drug-drug':
@@ -111,19 +112,19 @@ class NxtDRPMC(NXmodelProto):
             # self.conc.append(maxconc[i])
         self.graphs = graphs
 
-        self.max_conc = self.get_max_conc()
+        self.max_conc = self.get_max_conc(side_info_file)
         self.batches = {}
         self.apply(self.init_weights)
         self.to(device)
         
 
-    def get_max_conc(self):
-        mc = sp.load_npz('./data/datasets/base_auc/relations/drug_response_max_conc.npz')
-        mc = mc.todense()
+    def get_max_conc(self, side_info_file):
+        # <dataset>/entities/drug.csv -> <dataset>/relations/drug_response_max_conc.npz
+        ds_path = os.path.dirname(os.path.dirname(side_info_file))
+        mc = sp.load_npz(os.path.join(ds_path, 'relations', 'drug_response_max_conc.npz'))
+        mc = np.asarray(mc.todense())
 
-        fun_transf = lambda x : 1 / (1 + ((x+0.000001)**(-0.1)))
-        # apply to all elements of matrix
-        mc = np.vectorize(fun_transf)(mc)
+        mc = 1 / (1 + ((mc+0.000001)**(-0.1)))
 
         return mc
 
@@ -173,7 +174,7 @@ class NxtDRPMC(NXmodelProto):
                 x = self.embs_h[ent](x)
                 x = x[ii_mapping]
                 conc = t.tensor(self.max_conc[rel_idx[0], rel_idx[1]], dtype=t.float,
-                                device=self.device).transpose(1,0)
+                                device=self.device).reshape(-1, 1)
                 x = t.concat((x, conc), dim=1)
                 embs.append(x)
             else:
@@ -211,6 +212,17 @@ class NxtDRPMC(NXmodelProto):
         e0_latent = self.embs[e0](t.tensor(e0_indices, dtype=t.long, device=self.device))
         e0_latent = self.embs_h[e0](e0_latent)
         return e0_latent, e1_latent
+
+
+    def save(self, path):
+        '''
+        Save the model
+        pickle
+        '''
+        import pickle
+
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
 
 
 class NxtDRP(NXmodelProto):
@@ -255,7 +267,7 @@ class NxtDRP(NXmodelProto):
             self.embs[entity] = t.nn.Embedding(entity_len, self.latent_sizes[entity])
             self.embs_h[entity] = t.nn.Sequential(t.nn.Linear(self.latent_sizes[entity], out_emb_size),
                                        t.nn.LayerNorm(out_emb_size), ACTIVATION())
-        for rel in self.relations:
+        for rel in sorted(self.relations):
             self.bi_rel[rel] = t.nn.Bilinear(out_emb_size, out_emb_size, out_emb_size)
             if rel == 'cell_line-gene':
                 # binary
